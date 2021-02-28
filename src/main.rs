@@ -83,12 +83,23 @@ enum ScanOptions<T, E> {
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
 struct Token {
     token_type: TokenType,
     lexeme: String,
-    line: i32,
+    line: usize,
     // TODO literal
     // TODO object
+}
+
+impl Token {
+    fn new(token_type: TokenType, lexeme: String, line: usize) -> Self {
+        Token {
+            token_type,
+            lexeme,
+            line,
+        }
+    }
 }
 
 fn keywords() -> HashMap<String, TokenType> {
@@ -113,6 +124,7 @@ fn keywords() -> HashMap<String, TokenType> {
 }
 
 struct Scanner {
+    start: usize,
     current: usize,
     line: usize,
     content: Vec<char>,
@@ -122,6 +134,7 @@ struct Scanner {
 impl Scanner {
     fn new(s: String) -> Self {
         Scanner {
+            start: 0,
             current: 0,
             line: 1,
             content: s.chars().collect(),
@@ -133,6 +146,14 @@ impl Scanner {
         self.current += 1
     }
 
+    fn get_substring(&mut self) -> String {
+        let mut s = String::new();
+        for c in &self.content[self.start..self.current] {
+            s.push(c.clone())
+        }
+        s
+    }
+
     fn char_match(&self, c: char) -> bool {
         if let Some(c2) = self.peek() {
             return c == c2;
@@ -140,9 +161,9 @@ impl Scanner {
         false
     }
 
-    fn one_token(&mut self, token: TokenType) -> ScanOptions<TokenType, String> {
+    fn one_token(&mut self, token: TokenType) -> ScanOptions<Token, String> {
         self.advance();
-        ScanOptions::Some(token)
+        ScanOptions::Some(Token::new(token, self.get_substring(), self.line))
     }
 
     fn two_token(
@@ -150,48 +171,75 @@ impl Scanner {
         c: char,
         a_token: TokenType,
         b_token: TokenType,
-    ) -> ScanOptions<TokenType, String> {
+    ) -> ScanOptions<Token, String> {
         match self.char_match(c) {
             true => {
                 self.advance();
                 self.advance();
-                ScanOptions::Some(a_token)
+                ScanOptions::Some(Token::new(a_token, self.get_substring(), self.line))
             }
             false => {
                 self.advance();
-                ScanOptions::Some(b_token)
+                ScanOptions::Some(Token::new(b_token, self.get_substring(), self.line))
             }
         }
     }
 
-    fn maybe_comment(&mut self) -> ScanOptions<TokenType, String> {
-        // let mut start = self.content.clone();
+    fn maybe_comment(&mut self) -> ScanOptions<Token, String> {
         if self.char_match('/') {
             while !self.char_match('\n') {
                 self.advance()
             }
-            ScanOptions::Some(TokenType::Comment)
+            ScanOptions::Some(Token::new(
+                TokenType::Comment,
+                self.get_substring(),
+                self.line,
+            ))
         } else {
             self.advance();
-            ScanOptions::Some(TokenType::Slash)
+            ScanOptions::Some(Token::new(
+                TokenType::Slash,
+                self.get_substring(),
+                self.line,
+            ))
         }
     }
 
-    fn capture_string(&mut self) -> ScanOptions<TokenType, String> {
+    fn capture_string(&mut self) -> ScanOptions<Token, String> {
+        self.start += 1;
         while !self.char_match('"') {
+            if self.content[self.current] == '\n' {
+                self.line += 1
+            }
             if self.is_end() {
                 return ScanOptions::Err("String didn't terminate before end of file".to_owned());
             }
             self.advance()
         }
-        ScanOptions::Some(TokenType::String)
+        self.advance();
+        ScanOptions::Some(Token::new(
+            TokenType::String,
+            self.get_substring(),
+            self.line,
+        ))
     }
 
-    fn is_alpha_numeric(&mut self) -> ScanOptions<TokenType, String> {
+    fn is_alpha_numeric(&mut self) -> ScanOptions<Token, String> {
         while let Some(c) = self.peek() {
             match c {
                 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.advance(),
-                _ => return ScanOptions::Some(TokenType::Identifier),
+                _ => {
+                    self.advance();
+                    let s = self.get_substring();
+                    if let Some(t) = self.keywords.get(&s) {
+                        return ScanOptions::Some(Token::new(*t, self.get_substring(), self.line));
+                    }
+                    return ScanOptions::Some(Token::new(
+                        TokenType::Identifier,
+                        self.get_substring(),
+                        self.line,
+                    ));
+                }
             }
         }
         return ScanOptions::Err(
@@ -200,7 +248,7 @@ impl Scanner {
     }
 
     fn is_end(&self) -> bool {
-        self.current >= self.content.len()
+        self.current >= self.content.len() - 1
     }
 
     fn peek(&self) -> Option<char> {
@@ -211,44 +259,73 @@ impl Scanner {
         }
     }
 
-    fn scan_lexeme(&mut self) -> ScanOptions<TokenType, String> {
-        if self.is_end() {
-            return ScanOptions::Some(TokenType::EOF);
+    fn no_token(&mut self) -> ScanOptions<Token, String> {
+        self.advance();
+        ScanOptions::None
+    }
+
+    // ignoring floating point numbers for the moment
+    fn is_numeric(&mut self) -> ScanOptions<Token, String> {
+        while let Some(c) = self.peek() {
+            match c {
+                '0'..='9' => self.advance(),
+                _ => (),
+            }
         }
+        self.advance();
+        ScanOptions::Some(Token::new(
+            TokenType::Number,
+            self.get_substring(),
+            self.line,
+        ))
+    }
+
+    fn scan_lexeme(&mut self) -> ScanOptions<Token, String> {
         match self.content[self.current] {
             '{' => self.one_token(TokenType::LeftBrace),
-            '}' => self.one_token(TokenType::LeftBrace),
-            '(' => self.one_token(TokenType::LeftBrace),
-            ')' => self.one_token(TokenType::LeftBrace),
-            ',' => self.one_token(TokenType::LeftBrace),
-            '.' => self.one_token(TokenType::LeftBrace),
-            '-' => self.one_token(TokenType::LeftBrace),
-            '+' => self.one_token(TokenType::LeftBrace),
-            '*' => self.one_token(TokenType::LeftBrace),
+            '}' => self.one_token(TokenType::RightBrace),
+            '(' => self.one_token(TokenType::LeftParen),
+            ')' => self.one_token(TokenType::RightParen),
+            ',' => self.one_token(TokenType::Comma),
+            '.' => self.one_token(TokenType::Dot),
+            '-' => self.one_token(TokenType::Minus),
+            '+' => self.one_token(TokenType::Plus),
+            '*' => self.one_token(TokenType::Star),
             '!' => self.two_token('=', TokenType::BangEqual, TokenType::Bang),
             '=' => self.two_token('=', TokenType::EqualEqual, TokenType::Equal),
             '<' => self.two_token('=', TokenType::LessEqual, TokenType::Less),
             '>' => self.two_token('=', TokenType::GreaterEqual, TokenType::Greater),
             '/' => self.maybe_comment(),
             '"' => self.capture_string(),
-            ' ' => ScanOptions::None,
-            '\r' => ScanOptions::None,
-            '\t' => ScanOptions::None,
+            ' ' => self.no_token(),
+            '\r' => self.no_token(),
+            '\t' => self.no_token(),
             '\n' => {
                 self.line += 1;
-                ScanOptions::None
+                self.no_token()
             }
             'a'..='z' | 'A'..='Z' | '_' => self.is_alpha_numeric(),
-
-            _ => ScanOptions::Some(TokenType::EOF),
+            '0'..='9' => self.is_numeric(),
+            _ => ScanOptions::Err("Did not recognize the token".to_owned()),
         }
     }
 
-    fn scan(&mut self) {
-        self.advance();
-        println!("hello, this is going to work");
-        println!("current: {}", self.current);
-        println!("chars: {:?}", self.content)
+    fn scan_file(&mut self) {
+        let mut result: Vec<Token> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+
+        while !self.is_end() {
+            self.start = self.current;
+            match self.scan_lexeme() {
+                ScanOptions::Some(t) => {
+                    println!("lexeme: {:?}", t);
+                    result.push(t)
+                }
+                ScanOptions::Err(e) => errors.push(e),
+                _ => (),
+            }
+        }
+        println!("Errors: {:?}", errors);
     }
 }
 
@@ -257,7 +334,7 @@ fn main() {
     match arg_list.len() {
         1 => println!("Looking for a script file"),
         2 => match extract_contents(arg_list[1].clone()) {
-            Ok(v) => Scanner::new(v).scan(),
+            Ok(v) => Scanner::new(v).scan_file(),
             Err(e) => println!("err: {}", e),
         },
         _ => println!("I'm assuming something went wrong"),
@@ -269,9 +346,20 @@ mod test {
     use super::*;
 
     #[test]
-    fn check_scanner() {
+    fn check_scan_lexeme() {
         let mut s = Scanner::new("{".to_owned());
-        assert_eq!(s.scan_lexeme(), ScanOptions::Some(TokenType::LeftBrace));
+        assert_eq!(
+            s.scan_lexeme(),
+            ScanOptions::Some(Token::new(TokenType::LeftBrace, "{".to_owned(), 1))
+        );
         assert_eq!(s.current, 1);
+    }
+
+    #[test]
+    fn check_scan_file() {
+        let mut s = Scanner::new(r#"var hello = "moonshot""#.to_owned());
+        s.scan_file();
+        s = Scanner::new(r#"var foo = 64"#.to_owned());
+        s.scan_file()
     }
 }
